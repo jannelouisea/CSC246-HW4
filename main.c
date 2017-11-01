@@ -3,10 +3,13 @@
 #include <unistd.h>
 #include <string.h>
 #include <pthread.h>
+#include<assert.h>
+#include<unistd.h>
 
 #define MAX_THREADS 10
 #define MAX_POINTS 10000
 #define MAX_TASK 8
+#define LINE_LEN 50
 
 struct Point {
     int x;                      /// x value ///
@@ -37,6 +40,8 @@ pthread_cond_t placeTask        = PTHREAD_COND_INITIALIZER;
 pthread_cond_t obtainTask       = PTHREAD_COND_INITIALIZER;
 
 unsigned taskCount = 0;         /// main condition variable to check how many tasks are available ///
+double globalMin = 0.0;
+unsigned pointsCount = 0;
 
 unsigned nworker;
 
@@ -80,6 +85,15 @@ void * worker_routine(void * arg) {
 
 }
 
+void addPoint(char line[LINE_LEN]) {
+    char * x = strtok(line, " ");
+    char * y = strtok(0, " ");
+
+    (points + pointsCount)->x = (int) strtol(x, NULL, 10);
+    (points + pointsCount)->y = (int) strtol(y, NULL, 10);
+    (points + pointsCount)->minSquaredDist = 0.0;
+}
+
 int main(int argc, char * argv[]) {
 
     if (argv[1] == NULL || argv[2] == NULL || argc != 3) {
@@ -94,8 +108,8 @@ int main(int argc, char * argv[]) {
         Error_msg("Worker number reaches max!");
     }
 
-    taskQueue = malloc(MAX_TASK * sizeof(struct Task *));
-    points = malloc(MAX_POINTS * sizeof(struct Point *));
+    taskQueue = malloc(MAX_TASK * sizeof(struct Task));
+    points = malloc(MAX_POINTS * sizeof(struct Point));
 
     //synchronization initialization
 
@@ -110,7 +124,25 @@ int main(int argc, char * argv[]) {
         }
     }
 
-    // manager routine
+    /// manager routine ///
+    FILE * fp;
+    char * fname = NULL;
+
+    fp = fopen(fname, "r");
+
+    char line[LINE_LEN];
+
+    /// Get the first point in the file ///
+    if (fgets(line, sizeof(line), fp) != NULL) {
+        addPoint(line);
+    } else {
+        printf("file is empty.\n");
+        return 0;
+    }
+
+    /// Read the rest of the points in the file ///
+
+    fclose(fp);
 
     for (i = 0; i < nworker; i++) {
         if (pthread_join(workers[i], NULL) != 0) {
