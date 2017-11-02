@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include<assert.h>
 #include<unistd.h>
+#include <mach/machine.h>
 
 #define MAX_THREADS 10
 #define MAX_POINTS 10000
@@ -36,12 +37,13 @@ pthread_mutex_t work            = PTHREAD_MUTEX_INITIALIZER;    /// Used in mana
 pthread_mutex_t updatePoints    = PTHREAD_MUTEX_INITIALIZER;    /// Used in worker thread when updating points array ///
 
 // condition variables
-pthread_cond_t placeTask        = PTHREAD_COND_INITIALIZER;
-pthread_cond_t obtainTask       = PTHREAD_COND_INITIALIZER;
+pthread_cond_t taskObtained     = PTHREAD_COND_INITIALIZER;
+pthread_cond_t taskPlaced       = PTHREAD_COND_INITIALIZER;
 
 unsigned taskCount = 0;         /// main condition variable to check how many tasks are available ///
 double globalMin = 0.0;
 unsigned pointsCount = 0;
+boolean_t running = TRUE;
 
 unsigned nworker;
 
@@ -54,17 +56,22 @@ static void Error_msg(const char * msg) {
 unsigned fill   = 0;
 unsigned use    = 0;
 
-void putTask(struct Task task) {
+void putTask(enum TASK_TYPE type) {
     // task_queue[fill] = task;
-    *(taskQueue + fill) = task;
+    (taskQueue + fill)->task_type = type;
+    if (type == LOCAL_MIN) {
+        (taskQueue + fill)->pidx = pointsCount - 1;
+    }
     fill = (fill + 1) % MAX_TASK;
     taskCount++;
+    printf("Task Count: %d\n", taskCount);
 }
 
-struct Task get() {
+struct Task getTask() {
     struct Task task = *(taskQueue + use);
     use = (use + 1) % MAX_TASK;
     taskCount--;
+    printf("Task Count: %d\n", taskCount);
     return task;
 }
 
@@ -82,7 +89,23 @@ void global_min() {
 
 //  worker_routine
 void * worker_routine(void * arg) {
-
+    struct Task task;
+    unsigned worker_id = (unsigned) arg;
+    while (running) {
+        pthread_mutex_lock(&work);
+            while (taskCount == 0) {
+                /*
+                if (!running) {
+                    return NULL;
+                }
+                 */
+                pthread_cond_wait(&taskPlaced, &work);
+            }
+            task = getTask();
+            pthread_cond_signal(&taskObtained);
+        pthread_mutex_unlock(&work);
+    }
+    return NULL;
 }
 
 void addPoint(char line[LINE_LEN]) {
@@ -92,6 +115,15 @@ void addPoint(char line[LINE_LEN]) {
     (points + pointsCount)->x = (int) strtol(x, NULL, 10);
     (points + pointsCount)->y = (int) strtol(y, NULL, 10);
     (points + pointsCount)->minSquaredDist = 0.0;
+    pointsCount++;
+}
+
+void printPoint() {
+    int pointIdx = pointsCount - 1;
+    printf("Point idx: %d\n", pointIdx);
+    printf("x: %d\n", (points + pointIdx)->x);
+    printf("y: %d\n", (points + pointIdx)->y);
+    printf("minDist: %f\n", (points + pointIdx)->minSquaredDist);
 }
 
 int main(int argc, char * argv[]) {
@@ -100,7 +132,7 @@ int main(int argc, char * argv[]) {
         Error_msg("Usage: ./p4 <thread num> <list file name>");
     }
 
-    nworker = atoi(argv[1]);
+    nworker = (unsigned) strtol(argv[1], NULL, 10);
     if (nworker <= 0) {
         Error_msg("worker number should be larger than 0!");
     }
@@ -111,8 +143,7 @@ int main(int argc, char * argv[]) {
     taskQueue = malloc(MAX_TASK * sizeof(struct Task));
     points = malloc(MAX_POINTS * sizeof(struct Point));
 
-    //synchronization initialization
-
+    /// Create threads ///
     pthread_t workers[nworker];
 
     unsigned i;
@@ -124,9 +155,10 @@ int main(int argc, char * argv[]) {
         }
     }
 
+
     /// manager routine ///
     FILE * fp;
-    char * fname = NULL;
+    char * fname = argv[2];
 
     fp = fopen(fname, "r");
 
@@ -135,23 +167,49 @@ int main(int argc, char * argv[]) {
     /// Get the first point in the file ///
     if (fgets(line, sizeof(line), fp) != NULL) {
         addPoint(line);
+        // printPoint();
     } else {
         printf("file is empty.\n");
         return 0;
     }
 
     /// Read the rest of the points in the file ///
+    while (pointsCount <= MAX_POINTS && fgets(line, sizeof(line), fp) != NULL) {
+        addPoint(line);
+        // printPoint();
+        /// Critical section ///
+        pthread_mutex_lock(&work);
+        while (taskCount > (MAX_TASK - 1)) {
+            pthread_cond_wait(&taskObtained, &work);
+        }
+        printf("Placing task for point idx: %d\n", pointsCount - 1);
+        putTask(LOCAL_MIN);
+        pthread_cond_signal(&taskPlaced);
+        pthread_mutex_unlock(&work);
+        /// Critical section ///
+    }
+
+    // call putTask(GLOBAL_MIN)
+
+    printf("Number of points: %d\n", pointsCount);
 
     fclose(fp);
 
-    for (i = 0; i < nworker; i++) {
-        if (pthread_join(workers[i], NULL) != 0) {
+    /// Join threads ///
+    printf("Setting running to false\n");
+    running = FALSE;
+    printf("Why is this still going in circles\n");
+    for (int j = 0; j < nworker; j++) {
+        printf("Joining thread %d\n", j);
+        if (pthread_join(workers[j], NULL) != 0) {
             Error_msg("Joining thread Error_msg!");
+        } else {
+            printf("Thread join successfully\n");
         }
 
         //synchronization destruction
         //other resource destruction
-
-        return 0;
     }
+
+    return 0;
 }
