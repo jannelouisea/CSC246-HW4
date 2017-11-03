@@ -13,20 +13,21 @@
 #define LINE_LEN 50
 
 struct Point {
-    int x;                      /// x value ///
-    int y;                      /// y value ///
-    double minSquaredDist;      /// min SQUARED dist of point ///
+    int x;                      /* x value */
+    int y;                      /* y value */
+    double minSquaredDist;      /* min SQUARED dist of point */
 };
 
 enum TASK_TYPE { LOCAL_MIN, GLOBAL_MIN };
 
 struct Task {
-    enum TASK_TYPE task_type;   /// type of task ///
-    int pidx;                   /// index of point in points array ///
+    enum TASK_TYPE task_type;   /* type of task */
+    int pidx;                   /* index of point in points array */
 };
 
 struct Task * taskQueue;
 struct Point * points;
+/* Keeps track of a thread's finished state. Used to signal when thread can perform global_min */
 bool threadsFinished[MAX_THREADS];
 
 /// synchronization variables (locks and cv) ///
@@ -92,7 +93,10 @@ void global_min() {
 bool otherThreadsFinished(unsigned refThreadID) {
     bool otherthreadsFinished = TRUE;
     for (int i = 0; i < nworker; i++) {
-        if (i == refThreadID) {}
+        if (nworker == 1) {     // Check if there is only one thread running
+            return threadsFinished[i];
+        }
+        else if (i == refThreadID) {}
         else {
             otherthreadsFinished = otherthreadsFinished && threadsFinished[i];
         }
@@ -162,7 +166,7 @@ void addPoint(char line[LINE_LEN]) {
 }
 
 int main(int argc, char * argv[]) {
-    clock_t begin = clock();
+    // clock_t begin = clock();
     if (argv[1] == NULL || argv[2] == NULL || argc != 3) {
         Error_msg("Usage: ./p4 <thread num> <list file name>");
     }
@@ -222,6 +226,11 @@ int main(int argc, char * argv[]) {
         /// Critical section ///
     }
 
+    if (pointsCount < 2) {
+        printf("Only one point in file.\n");
+        return 0;
+    }
+
     /// Call global task ///
     pthread_mutex_lock(&work);
     while (taskCount >= MAX_TASK) {
@@ -234,7 +243,7 @@ int main(int argc, char * argv[]) {
 
     /// Join threads ///
     running = FALSE;
-    pthread_cond_broadcast(&taskPlaced);    // wake up any threads that are sleeping and waiting on a task
+    pthread_cond_broadcast(&taskPlaced);    // wake up any threads that are still sleeping and waiting on producer to signal
     for (int j = 0; j < nworker; j++) {
         if (pthread_join(workers[j], NULL) != 0) {
             Error_msg("Joining thread Error_msg!");
@@ -242,9 +251,9 @@ int main(int argc, char * argv[]) {
     }
 
     // See the min dist for each thread
-    for(int i = 0; i < pointsCount; i++) {
-        if (points[i].minSquaredDist == globalMinSquared) {
-            printf("(%d,%d) ", points[i].x, points[i].y);
+    for(int k = 0; k < pointsCount; k++) {
+        if (points[k].minSquaredDist == globalMinSquared) {
+            printf("(%d,%d) ", points[k].x, points[k].y);
         }
     }
     printf("[%f]\n", sqrt(globalMinSquared));
@@ -252,9 +261,9 @@ int main(int argc, char * argv[]) {
     free(taskQueue);
     free(points);
 
-    clock_t end = clock();
-    double time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
-    printf("time spent: %f", time_spent);
+    // clock_t end = clock();
+    // double time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
+    // printf("time spent: %f", time_spent);
 
     return 0;
 }
