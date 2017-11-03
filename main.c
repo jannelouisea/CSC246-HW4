@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include<assert.h>
 #include<unistd.h>
+#include<stdbool.h>
 #include<math.h>
 #include <mach/machine.h>
 
@@ -28,6 +29,7 @@ struct Task {
 
 struct Task * taskQueue;
 struct Point * points;
+bool threadsFinished[MAX_THREADS];
 
 /// synchronization variables (locks and cv) ///
 // locks
@@ -39,7 +41,7 @@ pthread_cond_t taskObtained     = PTHREAD_COND_INITIALIZER;
 pthread_cond_t taskPlaced       = PTHREAD_COND_INITIALIZER;
 
 unsigned taskCount = 0;         /// main condition variable to check how many tasks are available ///
-double globalMin = 0.0;
+double globalMinSquared = -1.0;
 unsigned pointsCount = 0;
 boolean_t running = TRUE;
 
@@ -60,7 +62,7 @@ void putTask(enum TASK_TYPE type) {
         (taskQueue + fill)->pidx = pointsCount - 1;
     }
     fill = (fill + 1) % MAX_TASK;
-    printf("Placed task for point: %d\n", pointsCount - 1);
+    // printf("Placed task for point: %d\n", pointsCount - 1);
     taskCount++;
 }
 
@@ -79,6 +81,8 @@ void local_min(int pidx) {
     for (int i = (pidx - 1); i >= 1; i++) {
         struct Point p2 = points[i];
         double distSquared = pow(p2.x - p1.x, 2) + pow(p2.y - p1.y, 2);
+
+        /// Critical Section ///
         pthread_mutex_lock(&updatePoints);
         if (distSquared < p1.minSquaredDist) {
             p1.minSquaredDist = distSquared;
@@ -87,39 +91,97 @@ void local_min(int pidx) {
             p2.minSquaredDist = distSquared;
         }
         pthread_mutex_unlock(&updatePoints);
+        /// Critical Section ///
     }
 }
 
 // global_min function
 void global_min() {
+    // Wait till all other threads are finished
+    for (int i = 0; i < pointsCount; i++) {
+        double * currMinSquared = &points[i].minSquaredDist;
+        if (globalMinSquared == -1.0) {
+            globalMinSquared = *currMinSquared;
+        } else if (*currMinSquared < globalMinSquared) {
+            globalMinSquared = *currMinSquared;
+        }
+    }
+}
 
+bool otherThreadsFinished(unsigned refThreadID) {
+    bool otherthreadsFinished = TRUE;
+    for (int i = 0; i < nworker; i++) {
+        if (i == refThreadID) {}
+        otherthreadsFinished = otherthreadsFinished && threadsFinished[i];
+    }
+    return otherthreadsFinished;
 }
 
 //  worker_routine
 void * worker_routine(void * arg) {
     unsigned threadID = (unsigned) arg;
-    printf("thread %d started\n", threadID);
+    // printf("thread %d started\n", threadID);
     while (1) {
         /// Critical section ///
         pthread_mutex_lock(&work);
-        printf("thread %d has work lock\n", threadID);
+        // printf("thread %d has work lock\n", threadID);
         while (taskCount == 0) {
             if (!running) {
-                printf("thread %d is no longer working an releases work lock\n", threadID);
+                // printf("thread %d is no longer working an releases work lock\n", threadID);
+                // threadsFinished[threadID] = TRUE;
+                *(threadsFinished + threadID) = TRUE;
                 pthread_mutex_unlock(&work);
                 return NULL;
             }
-            printf("thread %d is waiting on task\n", threadID);
+            // printf("thread %d is waiting on task\n", threadID);
             pthread_cond_wait(&taskPlaced, &work);
         }
         struct Task task = getTask();
-        printf("thread %d got task for point: %d\n", threadID, task.pidx);
-        printf("thread %d signals that task was obtained\n", threadID);
+        // printf("thread %d got task for point: %d\n", threadID, task.pidx);
+        // printf("thread %d signals that task was obtained\n", threadID);
         pthread_cond_signal(&taskObtained);
-        printf("thread %d is about to unlock work lock\n", threadID);
+        // printf("thread %d is about to unlock work lock\n", threadID);
         pthread_mutex_unlock(&work);
         /// Critical section ///
+
+        if (task.task_type == LOCAL_MIN) {
+            // printf("thread %d is calculating distance for task\n", threadID);
+            // local_min(task.pidx);
+            struct Point * p1 = &points[task.pidx];
+            // struct Point p1 = points[task.pidx];
+            for (int i = (task.pidx - 1); i >= 0; i--) {
+                printf("thread %d still calc distance\n", threadID);
+                // struct Point p2 = points[i];
+                struct Point * p2 = &points[i];
+                double distSquared = pow(p2->x - p1->x, 2) + pow(p2->y - p1->y, 2);
+
+                /// Critical Section ///
+                pthread_mutex_lock(&updatePoints);
+                if (p1->minSquaredDist == -1.0) {
+                    p1->minSquaredDist = distSquared;
+                } else if (distSquared < p1->minSquaredDist) {
+                    p1->minSquaredDist = distSquared;
+                }
+
+                if (p2->minSquaredDist == -1.0) {
+                    p2->minSquaredDist = distSquared;
+                } else if (distSquared < p2->minSquaredDist) {
+                    p2->minSquaredDist = distSquared;
+                }
+                pthread_mutex_unlock(&updatePoints);
+                /// Critical Section ///
+            }
+        } else {
+            /*
+            while (!otherThreadsFinished(threadID)) {
+
+            }
+            global_min();
+             */
+        }
     }
+    // threadsFinished[threadID] = TRUE;
+    *(threadsFinished + threadID) = TRUE;
     return NULL;
 }
 
@@ -129,7 +191,7 @@ void addPoint(char line[LINE_LEN]) {
 
     (points + pointsCount)->x = (int) strtol(x, NULL, 10);
     (points + pointsCount)->y = (int) strtol(y, NULL, 10);
-    (points + pointsCount)->minSquaredDist = 0.0;
+    (points + pointsCount)->minSquaredDist = -1.0;
     pointsCount++;
 }
 
@@ -165,9 +227,15 @@ int main(int argc, char * argv[]) {
     unsigned worker_index[nworker];
     for (i = 0; i < nworker; i++) {
         worker_index[i] = i;
+        /*
         if (pthread_create(&workers[i], NULL, worker_routine, (void *) &worker_index[i]) != 0) {
             Error_msg("Creating thread Error_msg!");
         }
+         */
+        if (pthread_create(&workers[i], NULL, worker_routine, (void *) i) != 0) {
+            Error_msg("Creating thread Error_msg!");
+        }
+        threadsFinished[i] = FALSE;
     }
 
 
@@ -192,43 +260,58 @@ int main(int argc, char * argv[]) {
         addPoint(line);
         /// Critical section ///
         pthread_mutex_lock(&work);
-        printf("MAIN thread has work lock\n");
+        // printf("MAIN thread has work lock\n");
         while (taskCount >= MAX_TASK) {
-            printf("MAIN is sleeping\n");
+            // printf("MAIN is sleeping\n");
             pthread_cond_wait(&taskObtained, &work);
         }
-        printf("MAIN thread places task\n");
+        // printf("MAIN thread places task\n");
         putTask(LOCAL_MIN);
-        printf("MAIN thread signals task is placed\n");
+        // printf("MAIN thread signals task is placed\n");
         pthread_cond_signal(&taskPlaced);
-        printf("MAIN thread unlocks work thread\n");
+        // printf("MAIN thread unlocks work thread\n");
         pthread_mutex_unlock(&work);
         /// Critical section ///
     }
+    printf("Finished tasks\n");
 
-    // call putTask(GLOBAL_MIN)
+    /// Call global task ///
+    /*
+    pthread_mutex_lock(&work);
+    while (taskCount >= MAX_TASK) {
+        pthread_cond_wait(&taskObtained, &work);
+    }
+    putTask(GLOBAL_MIN);
+    // wait to see if
+    pthread_mutex_unlock(&work);
+     */
 
-    printf("Number of points: %d\n", pointsCount);
+    // printf("Number of points: %d\n", pointsCount);
 
     fclose(fp);
 
     /// Join threads ///
-    printf("Setting running to false\n");
+    // printf("Setting running to false\n");
+    // sleep(5);
     running = FALSE;
-    pthread_cond_broadcast(&taskPlaced);
+    pthread_cond_broadcast(&taskPlaced);    // wake up any threads that are sleeping and waiting on a task
     for (int j = 0; j < nworker; j++) {
-        printf("Joining thread %d\n", j);
+        // printf("Joining thread %d\n", j);
         if (pthread_join(workers[j], NULL) != 0) {
             Error_msg("Joining thread Error_msg!");
-        } else {
-            printf("Successfully joined\n");
         }
     }
 
+    global_min(); // TODO turn this into a task
+
     // See the min dist for each thread
     for(int i = 0; i < pointsCount; i++) {
-        printf("(%d,%d) - %f\n", points[i].x, points[i].y, points[i].minSquaredDist);
+        // printf("(%d,%d) - %f\n", points[i].x, points[i].y, points[i].minSquaredDist);
+        if (points[i].minSquaredDist == globalMinSquared) {
+            printf("(%d,%d) ", points[i].x, points[i].y);
+        }
     }
+    printf("[%f]\n", globalMinSquared);
 
     return 0;
 }
