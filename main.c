@@ -72,39 +72,19 @@ struct Task getTask() {
 
 /// Thread function ///
 
-// local_min function
-void local_min(int pidx) {
-    struct Point * p1 = &points[pidx];
-    for (int i = (pidx - 1); i >= 0; i--) {
-        struct Point * p2 = &points[i];
-        double distSquared = pow(p2->x - p1->x, 2) + pow(p2->y - p1->y, 2);
-
-        /// Critical Section ///
-        pthread_mutex_lock(&updatePoints);
-        if (p1->minSquaredDist == -1.0) {
-            p1->minSquaredDist = distSquared;
-        } else if (distSquared < p1->minSquaredDist) {
-            p1->minSquaredDist = distSquared;
-        }
-
-        if (p2->minSquaredDist == -1.0) {
-            p2->minSquaredDist = distSquared;
-        } else if (distSquared < p2->minSquaredDist) {
-            p2->minSquaredDist = distSquared;
-        }
-        pthread_mutex_unlock(&updatePoints);
-        /// Critical Section ///
-    }
-}
+// local_min function is implemented in the working_thread
 
 // global_min function
 void global_min() {
     for (int i = 0; i < pointsCount; i++) {
         double * currMinSquared = &points[i].minSquaredDist;
-        if (globalMinSquared == -1.0) {
-            globalMinSquared = *currMinSquared;
-        } else if (*currMinSquared < globalMinSquared) {
-            globalMinSquared = *currMinSquared;
+        if (*currMinSquared < 0) {}
+        else {
+            if (globalMinSquared == -1.0) {
+                globalMinSquared = *currMinSquared;
+            } else if (*currMinSquared < globalMinSquared) {
+                globalMinSquared = *currMinSquared;
+            }
         }
     }
 }
@@ -113,7 +93,9 @@ bool otherThreadsFinished(unsigned refThreadID) {
     bool otherthreadsFinished = TRUE;
     for (int i = 0; i < nworker; i++) {
         if (i == refThreadID) {}
-        otherthreadsFinished = otherthreadsFinished && threadsFinished[i];
+        else {
+            otherthreadsFinished = otherthreadsFinished && threadsFinished[i];
+        }
     }
     return otherthreadsFinished;
 }
@@ -121,6 +103,7 @@ bool otherThreadsFinished(unsigned refThreadID) {
 //  worker_routine
 void * worker_routine(void * arg) {
     unsigned threadID = (unsigned) arg;
+    double local_min = -1.0;
     while (1) {
         /// Critical section ///
         pthread_mutex_lock(&work);
@@ -138,12 +121,27 @@ void * worker_routine(void * arg) {
         /// Critical section ///
 
         if (task.task_type == LOCAL_MIN) {
-            local_min(task.pidx);
-            // local_min(task.pidx, threadID);
+            struct Point * p1 = &points[task.pidx];
+            for (int i = (task.pidx - 1); i >= 0; i--) {
+                struct Point * p2 = &points[i];
+                double distSquared = pow(p2->x - p1->x, 2) + pow(p2->y - p1->y, 2);
+
+                /// Critical Section ///
+                if (local_min == -1.0 || distSquared <= local_min) {
+                    local_min = distSquared;
+                    pthread_mutex_lock(&updatePoints);
+                    if (p1->minSquaredDist == -1.0 || distSquared < p1->minSquaredDist) {
+                        p1->minSquaredDist = local_min;
+                    }
+                    if (p2->minSquaredDist == -1.0 || distSquared < p2->minSquaredDist) {
+                        p2->minSquaredDist = local_min;
+                    }
+                    pthread_mutex_unlock(&updatePoints);
+                }
+                /// Critical Section ///
+            }
         } else {
-            // printf("Thread %d got global min function\n", threadID);
             while (otherThreadsFinished(threadID)) {
-                // printf("Threads are still running\n");
                 sleep(1);
             }
             global_min();
